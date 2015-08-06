@@ -15,16 +15,31 @@ namespace Oxide.Plugins
     [Info("Government", "BodyweightEnergy", "0.0.1", ResourceId = 0)]
     public class Government : RustPlugin
     {
-        public static string[] RankList = new string[] { "CROWN", "HEAD", "BOOT", "WORKER", "CITIZEN" };
+        public static List<string> RankList = new List<string>();
 
         public static string dataFilename = "government_datafile";
         public static Dictionary<string, Domain> lookup;     //contains <playerId, Domain>
         public static Dictionary<string, Domain> domains;    //contains <domainTag, Domain>
+        public static Dictionary<string, List<string>> permissions = new Dictionary<string,List<string>>();
 
         // Saves the data file
         public void SaveData()
         {
             var data = Interface.GetMod().DataFileSystem.GetDatafile(dataFilename);
+            // Saving Rank List Data
+            var rankData = new List<object>();
+            foreach (var rank in RankList) rankData.Add(rank);
+            data["ranks"] = rankData;
+            // Saving Permission Data
+            var permissionsData = new Dictionary<string, object>();
+            foreach (var permission in permissions)
+            {
+                var permitList = new List<object>();
+                foreach (var rank in permission.Value) permitList.Add(rank);
+                permissionsData.Add(permission.Key, permitList);
+            }
+            data["permissions"] = permissionsData;
+            // Saving Domain Data
             var domainsData = new Dictionary<string,object>();
             foreach (var domain in domains)
             {
@@ -54,6 +69,24 @@ namespace Oxide.Plugins
         {
             domains.Clear();
             var data = Interface.GetMod().DataFileSystem.GetDatafile(dataFilename);
+            // Load Rank List
+            if (data["ranks"] != null)
+            {
+                var rankList = (List<object>) Convert.ChangeType(data["ranks"], typeof(List<object>));
+                foreach (var irank in rankList) RankList.Add((string)irank);
+            }
+            if (data["permissions"] != null)
+            {
+                var permissionData = (Dictionary<string, object>) Convert.ChangeType(data["permissions"], typeof(Dictionary<string, object>));
+                foreach (var ipermission in permissionData)
+                {
+                    var permitList = (List<object>) Convert.ChangeType(ipermission.Value, typeof(List<object>));
+                    var newPermitList = new List<string>();
+                    foreach (var permit in permitList) newPermitList.Add((string)permit);
+                    permissions.Add(ipermission.Key, newPermitList);
+                }
+            }
+            // Load Domain data
             if (data["domains"] != null)
             {
                 var domainsData = (Dictionary<string,object>) Convert.ChangeType(data["domains"], typeof(Dictionary<string,object>));
@@ -167,6 +200,7 @@ namespace Oxide.Plugins
             }
         }
 
+        // Main Chat-Plugin Interaction
         [ChatCommand("gov")]
         private void cmdChatDomain(BasePlayer player, string command, string[] args)
         {
@@ -241,10 +275,13 @@ namespace Oxide.Plugins
 
         }
 
+        #region Debug Methods
         [ConsoleCommand("gov.dump")]
         private void cmdDumpData(ConsoleSystem.Arg arg)
         {
             var sb = new StringBuilder();
+            // Dump Domain data to console
+            sb.Append("Available Domains:\n\n");
             if (domains.Count == 0)
             {
                 sb.Append("No domains in registry.");
@@ -257,8 +294,33 @@ namespace Oxide.Plugins
                     sb.Append(dumpedDomain.DumpData());
                 }
             }
+
+            // Dump Rank List to cosole
+            if (RankList != null)
+            {
+                sb.Append("\n\nAvailable ranks: [");
+                foreach (var rank in RankList)
+                {
+                    sb.Append(rank + ", ");
+                }
+                sb.Append("]");
+            }
+
+            // Dump Permissions to console
+            if (permissions != null)
+            {
+                sb.Append("\n\nAvailable permissions:\n\n");
+                foreach (var permission in permissions)
+                {
+                    sb.Append(permission.Key + ": [");
+                    foreach (var rank in permission.Value)
+                    {
+                        sb.Append(rank + ", ");
+                    }
+                    sb.Append("]\n");
+                }
+            }
             PrintToConsole(arg.Player(), sb.ToString());
-            SaveData();
         }
 
         [ConsoleCommand("gov.lookup")]
@@ -392,6 +454,7 @@ namespace Oxide.Plugins
             SaveData();
 
         }
+        #endregion
 
         // Represents a member
         public class Member 
