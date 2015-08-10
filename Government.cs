@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
+using Rust;
 using Newtonsoft.Json.Linq;
 
 namespace Oxide.Plugins
@@ -16,11 +17,45 @@ namespace Oxide.Plugins
     public class Government : RustPlugin
     {
         public static List<string> RankList = new List<string>();
+        private bool isServerInitialized = false;
+        private bool isLoaded = false;
 
         public static string dataFilename = "government_datafile";
         public static Dictionary<string, Domain> lookup;     //contains <playerId, Domain>
         public static Dictionary<string, Domain> domains;    //contains <domainTag, Domain>
-        public static Dictionary<string, List<string>> permissions = new Dictionary<string,List<string>>();
+        public static Dictionary<string, List<string>> permissions = new Dictionary<string,List<string>>(); //contains < permissionName, List<ranks> >
+        private Regex tagRe = new Regex("^[a-zA-Z0-9]{2,6}$");
+        private static string json = @"
+		[{
+			""name"":   ""GovInfoGUI"",
+			""parent"": ""Overlay"",
+			""components"":
+			[
+				{
+					""type"":	   ""UnityEngine.UI.Button"",
+					""color"":	   ""%background%"",
+					""imagetype"": ""Tiled""
+				},
+				{
+					""type"":	   ""RectTransform"",
+					""anchormin"": ""%left% %bottom%"",
+					""anchormax"": ""%right% %top%""
+				} 
+			]
+		},
+		{ 
+			""parent"": ""GovInfoGUI"",
+			""components"":
+			[
+				{
+					""type"":	  ""UnityEngine.UI.Text"",
+					""text"":	  ""%domain_info%"",
+					""fontSize"": %size%,
+					""color"":    ""%color%"",
+					""align"":    ""MiddleLeft""
+				}
+			]
+		}]";
 
         // Saves the data file
         public void SaveData()
@@ -31,7 +66,7 @@ namespace Oxide.Plugins
             foreach (var rank in RankList) rankData.Add(rank);
             data["ranks"] = rankData;
             // Saving Permission Data
-            var permissionsData = new Dictionary<string, object>();
+            var permissionsData = new Dictionary<string, object>(); 
             foreach (var permission in permissions)
             {
                 var permitList = new List<object>();
@@ -46,7 +81,7 @@ namespace Oxide.Plugins
                 var domainData = new Dictionary<string,object>();
                 domainData.Add("name", domain.Value.Name);
                 var members = new Dictionary<string,object>();
-                foreach (var imember in domain.Value.Members)
+                foreach (var imember in domain.Value.Members) 
                 {
                     var memberData = new Dictionary<string, object>();
                     memberData.Add("playerRank", imember.Rank);
@@ -56,14 +91,17 @@ namespace Oxide.Plugins
                 var guests = new List<object>();
                 foreach (var iguest in domain.Value.Guests)
                     guests.Add(iguest);
+                var inviteds = new List<object>();
+                foreach (var iinvited in domain.Value.Inviteds)
+                    inviteds.Add(iinvited);
                 domainData.Add("members", members);
                 domainData.Add("guests", guests);
+                domainData.Add("inviteds", inviteds);
                 domainsData.Add(domain.Value.Tag, domainData);
             }
             data["domains"] = domainsData;
             Interface.GetMod().DataFileSystem.SaveDatafile(dataFilename);
         }
-
         // Loads the data file
         public void LoadData()
         {
@@ -109,6 +147,12 @@ namespace Oxide.Plugins
                     {
                         guests.Add(iguestData.ToString());
                     }
+                    var invitedsData = (List<object>)domain["inviteds"];
+                    var inviteds = new List<string>();
+                    foreach (var iinvitedData in invitedsData)
+                    {
+                        inviteds.Add(iinvitedData.ToString());
+                    }
                     var newDomain = new Domain(tag, name);
                     foreach (var member in members)
                     {
@@ -117,12 +161,34 @@ namespace Oxide.Plugins
                         newDomain.AssignPlayerNotes(member.UserID, member.PlayerNotes);
                     }
                     newDomain.Guests = guests;
+                    newDomain.Inviteds = inviteds;
                 }
                 Puts("Datafile loaded ({0}) domains successfully.", domains.Count);
             }
         }
+        // Load GUI
+        public void Load()  
+        {
+            CheckCreateConfig();
 
-        
+            double left = (double)Config["Position", "Left"];
+            double right = (double)Config["Position", "Left"] + (double)Config["Size", "Width"];
+            double bottom = (double)Config["Position", "Bottom"];
+            double top = (double)Config["Position", "Bottom"] + (double)Config["Size", "Height"];
+
+            json = json.Replace("%background%", (string)Config["BackgroundColor"])
+                       .Replace("%color%", (string)Config["TextColor"])
+                       .Replace("%size%", Config["FontSize"].ToString())
+                       .Replace("%left%", left.ToString())
+                       .Replace("%right%", right.ToString())
+                       .Replace("%bottom%", bottom.ToString())
+                       .Replace("%top%", top.ToString());
+            UpdateGUI();
+        }
+        public void Unload()
+        {
+            DestroyGUI();
+        }
         // Finds a player by partial name
         private BasePlayer FindPlayerByPartialName(string name)
         {
@@ -155,12 +221,96 @@ namespace Oxide.Plugins
             }
             return player;
         }
+        // Finds a domain by tag
+        private Domain FindDomain(string tag)
+        {
+            Domain domain;
+            if (domains.TryGetValue(tag, out domain))
+                return domain;
+            return null;
+        }
+        
+        // Finds a user's domain
+        private Domain FindDomainByUser(string userId)
+        {
+            Domain domain;
+            if (lookup.TryGetValue(userId, out domain))
+                return domain;
+            return null;
+        }
+        // Strips the tag from a player's name
+        private string StripTag(string name, Domain domain)
+        {
+            if (domain == null)
+                return name;
+            var re = new Regex(@"^\[" + domain.Tag + @"\]\s");
+            while (re.IsMatch(name))
+                name = name.Substring(domain.Tag.Length + 3);
 
+            Puts("StripTag result = " + name);
+            return name;
+        }
+
+        // Sets up a player to use the correct domain tag
+        private void SetupPlayer(BasePlayer player)
+        {
+            var prevName = player.displayName;
+            var playerId = player.userID.ToString();
+            var domain = FindDomainByUser(playerId);
+            player.displayName = StripTag(player.displayName, domain);
+            if (domain == null)
+            {
+                return;
+            }
+            else 
+            {
+                var tag = "[" + domain.Tag + "] "; 
+                if (!player.displayName.StartsWith(tag))
+                    player.displayName = tag + prevName;
+            }
+            if (player.displayName != prevName)
+                player.SendNetworkUpdate();
+        }
+        // Sets up all players contained in playerIds
+        private void SetupPlayers(List<string> playerIds)
+        {
+            foreach (var playerId in playerIds)
+            {
+                var uid = Convert.ToUInt64(playerId);
+                var player = BasePlayer.FindByID(uid);
+                if (player != null)
+                    SetupPlayer(player);
+                else
+                {
+                    player = BasePlayer.FindSleeping(uid);
+                    if (player != null)
+                        SetupPlayer(player);
+                }
+            }
+        }
         public static string FindPlayerNameByID(string playerId)
         {
             var player = BasePlayer.FindByID(Convert.ToUInt64(playerId));
             if (player == null) return "NULL";
             else return player.displayName;
+        }
+        private bool HasPermission(string playerId, string permissionType)
+        {
+            if (lookup[playerId] != null)
+            {
+                var playerDomain = lookup[playerId];
+                var member = playerDomain.FindMemberByID(playerId);
+                var memberRank = member.Rank;
+                if (permissions[permissionType] != null)
+                {
+                    if (permissions[permissionType].Contains(memberRank))
+                    {
+                        return true;
+                        Puts("Player " + playerId + " has permission to " + permissionType + ".");
+                    }
+                }
+            }
+            return false;
         }
 
         private Domain FindPlayerDomain(string playerId)
@@ -184,15 +334,59 @@ namespace Oxide.Plugins
                 return null;
             }
         }
-
+         
+        public void AddGUI()
+        {
+            try
+            {
+                foreach (BasePlayer bp in BasePlayer.activePlayerList)
+                {
+                    var playerId = bp.userID.ToString();
+                    if (lookup.ContainsKey(playerId))
+                    {
+                            if (lookup[playerId] != null)
+                            {
+                                var playerDomain = lookup[playerId];
+                                var domainTag = playerDomain.Tag;
+                                var domainName = playerDomain.Name;
+                                var member = playerDomain.FindMemberByID(playerId);
+                                var memberRank = member.Rank;
+                                //var currentCrownName = BasePlayer.FindByID(Convert.ToUInt64(playerDomain.Crown.UserID)).displayName;
+                                var guiString = "Domain: " + domainName + " [" + domainTag + "]\n" + /*"Crown: " + currentCrownName + */"\nYour Rank: " + memberRank;
+                                //CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = bp.net.connection }, null, "AddUI", json.Replace("%domain_info%", guiString));
+                            }
+                            else
+                            {
+                                var guiString = "You are not a member of any domain.";
+                                CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = bp.net.connection }, null, "AddUI", json.Replace("%domain_info%", guiString));
+                            }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Error("AddGUI failed ", ex);
+            }
+        }
+        public void DestroyGUI()
+        {
+            foreach (BasePlayer p in BasePlayer.activePlayerList)
+                CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = p.net.connection }, null, "DestroyUI", "GovInfoGUI");
+        }
+         
         [HookMethod("OnServerInitialized")]
-        void OnServerInitialized()
+        private void OnServerInitialized()
         {
             try
             {
                 lookup = new Dictionary<string, Domain>();
                 domains = new Dictionary<string, Domain>();
                 LoadData();
+                Load();
+                foreach (var player in BasePlayer.activePlayerList)
+                    SetupPlayer(player);
+                foreach (var player in BasePlayer.sleepingPlayerList)
+                    SetupPlayer(player);
             }
             catch (Exception ex)
             {
@@ -200,15 +394,40 @@ namespace Oxide.Plugins
             }
         }
 
+        [HookMethod("OnPlayerInit")]
+        private void OnPlayerInit(BasePlayer player)
+        {
+            try
+            {
+                SetupPlayer(player);
+            }
+            catch (Exception ex)
+            {
+                Error("OnPlayerInit failed", ex);
+            }
+        }
+
+        [HookMethod("OnPluginLoaded")]
+        private void OnPluginLoaded()
+        {
+            Load();
+        }
+
+        [HookMethod("SaveConfig")]
+        private void SaveConfig()
+        {
+
+        }
+
         // Main Chat-Plugin Interaction
         [ChatCommand("gov")]
-        private void cmdChatDomain(BasePlayer player, string command, string[] args)
+        void cmdChatDomain(BasePlayer player, string command, string[] args)
         {
             Puts("Entered cmdChatDomain function.");
             string playerId = player.userID.ToString();
             var playerDomain = (lookup.ContainsKey(playerId) ? lookup[playerId] : null);
             var sb = new StringBuilder();
-
+             
             if (args.Length == 0)
             {
                 sb.Append("Your steamID is " + playerId + " and you're a " + playerDomain.GetMemberRank(player.userID.ToString()).ToString() + " to the " + (playerDomain != null ? playerDomain.Name : "null") + " Domain");
@@ -224,14 +443,74 @@ namespace Oxide.Plugins
                         {
                             sb.Append("Invalid command syntax. Use /gov create <domainTag> <domainName>");
                         }
-                        //else if (playerDomain != null)
-                        //{
-                        //    sb.Append("You are already a member of a domain.");
-                        //}
+                        else if (playerDomain != null)
+                        {
+                            sb.Append("You are already a member of a domain.");
+                        }
+                        else if (domains.ContainsKey(args[1]))
+                        {
+                            sb.Append("A domain with this tag already exists.");
+                        }
+                        else if (domains.ContainsKey(args[1]))
+                        {
+                            sb.Append("A domain with this tag already exists.");
+                        }
                         else
                         {
                             var newDomain1 = new Domain(args[1], args[2], playerId);
                             sb.Append("You have successfully created the " + args[2] + " domain.");
+                        }
+                        SetupPlayer(player);
+                        break;
+                    case "join":
+                        if (args.Length != 2)
+                        {
+                            sb.Append("Invalid command syntax. Use /gov join <domainTag>");
+                        }
+                        else if (playerDomain != null)
+                        {
+                            sb.Append("You are already a member of a domain.");
+                        }
+                        else if (!domains.ContainsKey(args[1]))
+                        {
+                            sb.Append("No such domain exists.");
+                        }
+                        else if (domains.ContainsKey(args[1]))
+                        {
+                            var joinedDomain = domains[args[1]];
+                            if (!joinedDomain.IsInvited(playerId))
+                            {
+                                sb.Append("You cannot join a domain that you weren't invited to.");
+                            }
+                            else
+                            {
+                                joinedDomain.AddMember(playerId);
+                                sb.Append("You have successfully joined the " + joinedDomain.Name + " domain.");
+                            }
+                        }
+                        break;
+                    case "invite":
+                        var domain = lookup[playerId];
+                        if (args.Length != 2)  sb.Append("Invalid command syntax. Use /gov invite <Full/Partial player name>");
+                        else if (!HasPermission(playerId, "modify_citizen"))
+                        {
+                            sb.Append("You don't have permission to invite others to join your domain.");
+                        }
+                        else {
+                            var invitedPlayer = FindPlayerByPartialName(args[1]);
+                            if (invitedPlayer == null)
+                            {
+                                sb.Append("Player name either doesn't exist or isn't unique. Try the full name.");
+                            }
+                            else if (domain.Inviteds.Contains(invitedPlayer.userID.ToString()))
+                            {
+                                sb.Append("This player has already been invited to join your domain.");
+                            }
+                            else 
+                            {
+                                domain.Inviteds.Add(invitedPlayer.userID.ToString());
+                                sb.Append("You successfully invited " + invitedPlayer.displayName + " to become a citizen in your domain.");
+                            }
                         }
                         break;
                     case "leave":
@@ -249,6 +528,7 @@ namespace Oxide.Plugins
                             playerDomain.RemoveMember(playerId);
                             sb.Append("You have successfully left the " + playerDomain.Name + " Domain.");
                         }
+                        SetupPlayer(player);
                         break;
                     case "dump":
                         if (domains.Count == 0)
@@ -257,15 +537,14 @@ namespace Oxide.Plugins
                         }
                         else
                         {
-                            foreach (var domain in domains)
+                            foreach (var idomain in domains)
                             {
-                                var dumpedDomain = domain.Value;
+                                var dumpedDomain = idomain.Value; 
                                 sb.Append(dumpedDomain.DumpData());
                             }
                         }
                         break;
                     default:
-                        Puts("Entered default case.");
                         sb.Append("Error in command.");
                         break;
                 }
@@ -456,7 +735,7 @@ namespace Oxide.Plugins
         }
         #endregion
 
-        // Represents a member
+        // Represents a member 
         public class Member 
         {
             private string userID;
@@ -483,10 +762,12 @@ namespace Oxide.Plugins
         // Represents a domain
         public class Domain
         {
+            public Government mGovernment;
             private string name;
             private string tag;
             private List<Member> members;
             private List<string> guests;
+            private List<string> inviteds;
 
             public string Name
             {
@@ -508,6 +789,11 @@ namespace Oxide.Plugins
                 get { return guests; }
                 set { guests = value; }
             }
+            public List<string> Inviteds
+            {
+                get { return inviteds; }
+                set { inviteds = value; }
+            }
             public int Size
             {
                 get
@@ -521,6 +807,7 @@ namespace Oxide.Plugins
             {
                 members = new List<Member>();
                 guests = new List<string>();
+                inviteds = new List<string>();
                 domains.Add("NOTAG", this);
             }
             public Domain(string tag, string name)
@@ -529,6 +816,7 @@ namespace Oxide.Plugins
                 Name = name;
                 members = new List<Member>();
                 guests = new List<string>();
+                inviteds = new List<string>();
                 domains.Add(tag, this);
             }
             public Domain(string tag, string name, string crownId)
@@ -537,6 +825,7 @@ namespace Oxide.Plugins
                 Name = name;
                 members = new List<Member>();
                 guests = new List<string>();
+                inviteds = new List<string>();
                 domains.Add(tag, this);
                 AddMember(crownId);
                 ChangeMemberRank(crownId, AssignRank("CROWN"));
@@ -565,6 +854,10 @@ namespace Oxide.Plugins
             {
                 return guests.Contains(playerId);
             }
+            public bool IsInvited(string playerId)
+            {
+                return inviteds.Contains(playerId);
+            }
             public Member FindMemberByID(string playerId)
             {
                 if (IsMember(playerId))
@@ -590,6 +883,10 @@ namespace Oxide.Plugins
                 if (!Members.Contains(newMember) || !(lookup[playerId] == this))
                 {
                     return false;
+                }
+                if (Inviteds.Contains(playerId))
+                {
+                    Inviteds.Remove(playerId);
                 }
                 SortMemberListByRank();
                 return true;
@@ -666,27 +963,99 @@ namespace Oxide.Plugins
             public string DumpData()
             {
                 var sb = new StringBuilder();
-                sb.Append("[" + tag + "] " + name + "\n");
-                if (Members.Count == 0)
+                sb.Append("[" + tag + "] " + name + " (members="+Members.Count+")\n");
+                SortMemberListByRank();
+                foreach (var member in Members)
                 {
-                    sb.Append("No members.\n");
+                    var memberName = FindPlayerNameByID(member.UserID);
+                    sb.Append(member.UserID + "\t" + member.Rank + "\t" + memberName + "\t" + member.PlayerNotes);
+                    sb.Append("\n");
                 }
-                else
+                foreach (var guest in Guests)
                 {
-                    SortMemberListByRank();
-                    sb.Append("Members:\n");
-                    foreach (var member in Members)
-                    {
-                        var memberName = FindPlayerNameByID(member.UserID);
-                        sb.Append(member.UserID + "\t" + member.Rank + "\t" + memberName + "\t" + member.PlayerNotes);
-                        sb.Append("\n");
-                    }
+                    var guestName = FindPlayerNameByID(guest);
+                    sb.Append(guest + "\tGUEST\t" + guestName);
+                    sb.Append("\n");
+                }
+                foreach (var invited in Inviteds)
+                {
+                    var invitedName = FindPlayerNameByID(invited);
+                    sb.Append(invited + "\tINVITED\t" + invitedName);
+                    sb.Append("\n");
                 }
                 return sb.ToString();
             }
         }
 
+        protected override void LoadDefaultConfig()
+        {
+            Config.Clear();
 
+            CheckCreateConfig();
+
+            SaveConfig();
+            Puts("Default config was saved and loaded!");
+        }
+        private void UpdateGUI()
+        {
+            DestroyGUI();
+            AddGUI();
+        }
+        private void CheckCreateConfig()
+        {
+            if (Config["UpdateTimeInSeconds"] == null)
+                Config["UpdateTimeInSeconds"] = 2;
+
+            if (Config["ShowSeconds"] == null)
+                Config["ShowSeconds"] = false;
+
+            if (Config["BackgroundColor"] == null)
+                Config["BackgroundColor"] = "0.1 0.1 0.1 0.3";
+
+            if (Config["TextColor"] == null)
+                Config["TextColor"] = "1 1 1 0.3";
+
+            if (Config["FontSize"] == null)
+                Config["FontSize"] = 14;
+
+            if (Config["Position", "Left"] == null)
+                Config["Position", "Left"] = 0.01;
+
+            if (Config["Position", "Bottom"] == null)
+                Config["Position", "Bottom"] = 0.95;
+
+            if (Config["Size", "Width"] == null)
+                Config["Size", "Width"] = 0.5;
+
+            if (Config["Size", "Height"] == null)
+                Config["Size", "Height"] = 0.03;
+
+            if (Config["ServerTime"] == null)
+                Config["ServerTime"] = false;
+
+            if (Config["PreventChangingTime"] == null)
+                Config["PreventChangingTime"] = false;
+
+            if (Config["Messages", "Enabled"] == null)
+                Config["Messages", "Enabled"] = "You have enabled clock";
+
+            if (Config["Messages", "Disabled"] == null)
+                Config["Messages", "Disabled"] = "You have disabled clock";
+
+            if (Config["Messages", "STEnabled"] == null)
+                Config["Messages", "STEnabled"] = "Now your clock shows server time";
+
+            if (Config["Messages", "STDisabled"] == null)
+                Config["Messages", "STDisabled"] = "Now your clock shows ingame time";
+
+            if (Config["Messages", "Help"] == null)
+                Config["Messages", "Help"] = "Clock:\n/clock - toggle clock\n/clock server - toggle server/ingame time";
+
+            if (Config["Messages", "PreventChangeEnabled"] == null)
+                Config["Messages", "PreventChangeEnabled"] = "You can't choose between server or ingame time";
+
+            SaveConfig();
+        }
         #region Utility Methods
 
         private void Log(string message) {
