@@ -18,14 +18,21 @@ namespace Oxide.Plugins
     {
         #region Plugin Private Members
 
-        private string GovernmentDataFilename = "GovernmentData";
-        private Dictionary<string, Government> govs;
-        private Dictionary<string, Government> lookup;
-        private Dictionary<string, string> originalNames;
-        private Dictionary<string, List<string>> permissionList;
-        private List<string> RankList;
+        private static string GovernmentDataFilename = "GovernmentData";
+        private static Dictionary<string, Government> govs;
+        private static Dictionary<string, Government> lookup;
+        private static Dictionary<string, string> originalNames;
+        private static Dictionary<string, List<string>> permissionList;
+        private static List<string> RankList;
+        private static Dictionary<string, string> assignPermAssociation = new Dictionary<string, string> 
+        {
+            {"DICTATOR","modify_dictator"},
+            {"HEAD", "modify_head"},
+            {"BOOT", "modify_boot"},
+            {"CITIZEN", "modify_citizen"}
+        };
 
-        #endregion //Plugin Private Members
+        #endregion
 
         #region Data Management
 
@@ -135,6 +142,172 @@ namespace Oxide.Plugins
 
         #endregion //Data Management
 
+        #region Government Class Methods
+
+        private bool govNameExists(string name)
+        {
+            var exists = false;
+            foreach (var gov in govs)
+            {
+                if (gov.Value.Name == name)
+                {
+                    exists = true;
+                }
+            }
+            return exists;
+        }
+        public static string Rank(string rank_str)
+        {
+            if (RankList.Contains(rank_str))
+            {
+                return rank_str;
+            }
+            throw (new Exception("Attempted to assign invalid rank."));
+            return null;
+        }
+        public Government getGovByUserID (string playerId)
+        {
+            if (govs.ContainsKey(playerId))
+            {
+                return govs[playerId];
+            }
+            return null;
+        }
+        private string GetRank(string playerId)
+        {
+            return lookup[playerId].Members[playerId];
+        }
+        public bool isMemberOfGov (string playerId, string tag)
+        {
+            return (govs[tag].isMember(playerId));
+        }
+        public bool isGuestOfGov (string playerId, string tag)
+        {
+            return (govs[tag].isGuest(playerId));
+        }
+        public bool isInvitedOfGov(string playerId, string tag)
+        {
+            return (govs[tag].isInvited(playerId));
+        }
+
+        private BasePlayer FindPlayerByPartialName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return null;
+            BasePlayer player = null;
+            name = name.ToLower();
+            var allPlayers = BasePlayer.activePlayerList.ToArray();
+            // Try to find an exact match first
+            foreach (var p in allPlayers)
+            {
+                if (p.displayName == name)
+                {
+                    if (player != null)
+                        return null; // Not unique
+                    player = p;
+                }
+            }
+            if (player != null)
+                return player;
+            // Otherwise try to find a partial match
+            foreach (var p in allPlayers)
+            {
+                if (p.displayName.ToLower().IndexOf(name) >= 0)
+                {
+                    if (player != null)
+                        return null; // Not unique
+                    player = p;
+                }
+            }
+            return player;
+        }
+        private string StripTag(string name, Government gov)
+        {
+            if (gov == null)
+                return name;
+            var re = new Regex(@"^\[" + gov.Tag + @"\]\s");
+            while (re.IsMatch(name))
+                name = name.Substring(gov.Tag.Length + 3);
+
+            Puts("StripTag result = " + name);
+            return name;
+        }
+        public static string FindPlayerNameByID(string playerId)
+        {
+            var player = BasePlayer.FindByID(Convert.ToUInt64(playerId));
+            if (player == null) return "NULL";
+            else return player.displayName;
+        }
+
+        private bool HasPermission(string playerId, string permissionType)
+        {
+            if (lookup[playerId] != null)
+            {
+                var memberRank = lookup[playerId].Members[playerId];
+                if (permissionList[permissionType] != null)
+                {
+                    if (permissionList[permissionType].Contains(memberRank))
+                    {
+                        return true;
+                        Puts("Player " + playerId + " has permission to " + permissionType + ".");
+                    }
+                }
+            }
+            return false;
+        }
+
+        private void SetupPlayer(BasePlayer player)
+        {
+            var prevName = player.displayName;
+            var playerId = player.userID.ToString();
+            var gov = getGovByUserID(playerId);
+            player.displayName = StripTag(player.displayName, gov);
+            if (gov == null)
+            {
+                return;
+            }
+            else
+            {
+                var tag = "[" + gov.Tag + "] ";
+                if (!player.displayName.StartsWith(tag))
+                    player.displayName = tag + prevName;
+            }
+            if (player.displayName != prevName)
+                player.SendNetworkUpdate();
+        }
+        private void SetupPlayers(List<string> playerIds)
+        {
+            foreach (var playerId in playerIds)
+            {
+                var uid = Convert.ToUInt64(playerId);
+                var player = BasePlayer.FindByID(uid);
+                if (player != null)
+                    SetupPlayer(player);
+                else
+                {
+                    player = BasePlayer.FindSleeping(uid);
+                    if (player != null)
+                        SetupPlayer(player);
+                }
+            }
+        }
+
+        private void CreateGovernment(string tag, string name, string creatorID)
+        {
+            var newGov = new Government() { Tag = tag, Name = name };
+            govs.Add(tag, newGov);
+            newGov.AddMember(creatorID, Rank("DICTATOR"));
+        }
+        private void DisbandGovernment (string tag)
+        {
+            if(govs.ContainsKey(tag))
+            {
+                govs.Remove(tag);
+            }
+        }
+
+        #endregion
+
         #region Hook Methods
 
         [HookMethod("OnServerInitialized")]
@@ -152,8 +325,6 @@ namespace Oxide.Plugins
             }
         }
 
-
-
         #endregion
 
         #region Chat Commands
@@ -161,7 +332,221 @@ namespace Oxide.Plugins
         [ChatCommand("gov_create")]
         private void cmdChatGovCreate(BasePlayer player, string command, string[] args)
         {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if(args.Length != 2)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (lookup[playerId] != null)
+            {
+                sb.Append("You are already a member of a government.");
+            }
+            else if (govs.ContainsKey(args[0]))
+            {
+                sb.Append("This tag has already been taken. Try another tag.");
+            }
+            else if (govNameExists(args[1]))
+            {
+                sb.Append("This name has already been taken. Try another name.");
+            }
+            else
+            {
+                CreateGovernment(args[0], args[1], player.userID.ToString());
+                sb.Append("You have successfully created the " + args[1] + " government, and you are the dictator of it.");
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
 
+        [ChatCommand("gov_invite")]
+        private void cmdChatGovInvite(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 1)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any government.");
+            }
+            else if (!HasPermission(playerId, "modify_citizen"))
+            {
+                sb.Append("You do not have permission to invite.");
+            }
+            else
+            {
+                var invitedPlayer = FindPlayerByPartialName(args[0]);
+                var invitedID = invitedPlayer.userID.ToString();
+                var invitingGov = lookup[playerId];
+                invitingGov.Inviteds.Add(invitedID);
+                sb.Append("You have invited " + invitedPlayer.displayName + " to join your domain.");
+                sb.Append(" They must leave their existing government first (if they are a member of one)");
+                sb.Append(", then type \"/gov_join " + invitingGov.Tag + "\" to join yours.");
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_kick")]
+        private void cmdChatGovKick(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 1)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any government.");
+            }
+            else
+            {
+                var kickedPlayer = FindPlayerByPartialName(args[0]);
+                var kickedPlayerName = kickedPlayer.displayName;
+                var kickedPlayerID = kickedPlayer.userID.ToString();
+                if (kickedPlayer == null) sb.Append("Player name does not exist or isn't unique.");
+                else if (!lookup.ContainsKey(kickedPlayerID)) sb.Append("This player is not a member of your domain.");
+                else if (lookup[kickedPlayerID] != lookup[playerId]) sb.Append("This player is not a member of your domain.");
+                else
+                {
+                    var kickedPlayerRank = GetRank(kickedPlayerID);
+                    var permission = assignPermAssociation[kickedPlayerRank];
+                    if (!HasPermission(playerId, permission))
+                    {
+                        sb.Append("You do not have permission to kick this player.");
+                    }
+                    else
+                    {
+                        lookup[playerId].RemoveMember(kickedPlayerID);
+                        sb.Append("You have successfully kicked " + kickedPlayerName + " from your government.");
+                        lookup[playerId].Broadcast(kickedPlayerName + " has been banished from the " + lookup[playerId].Name + " government.");
+                    }
+                }
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_assign_rank")]
+        private void cmdChatGovAssignRank(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 2)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any government.");
+            }
+            else
+            {
+                var assignedPlayer = FindPlayerByPartialName(args[0]).userID.ToString();
+                var assignedPlayerName = FindPlayerByPartialName(args[0]).displayName;
+                var assignedRank = Rank(args[1]);
+                if (assignedPlayer == null) sb.Append("Player name does not exist or is not unique.");
+                else if (lookup[assignedPlayer] != lookup[playerId]) sb.Append("The player is not a member of your government.");
+                else if (!HasPermission(playerId, assignPermAssociation[assignedRank])) sb.Append("You do not have permission to " + assignPermAssociation[assignedRank] + ".");
+                else
+                {
+                    lookup[playerId].Members[assignedPlayer] = assignedRank;
+                    sb.Append(assignedPlayerName + " has been successfully assigned as " + assignedRank + ".");
+                }
+
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_join")]
+        private void cmdChatGovJoin(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 1)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (lookup.ContainsKey(playerId))
+            {
+                sb.Append("To join another government, you must leave this one first by typing");
+                sb.Append(" \"/gov_leave\".");
+            }
+            else if(!govs.ContainsKey(args[0]))
+            {
+                sb.Append("No such government exists.");
+            }
+            else if (!govs[args[0]].isInvited(playerId))
+            {
+                sb.Append("You were not invited to join this government. Make sure a permitted member of that government has already invited you.");
+            }
+            else
+            {
+                var invitingGov = govs[args[0]];
+                invitingGov.AddMember(playerId, Rank("CITIZEN"));
+                invitingGov.Inviteds.Remove(playerId);
+                sb.Append("You are now a " + GetRank(playerId) + " of the " + lookup[playerId].Name + " government.");
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_leave")]
+        private void cmdChatGovLeave(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 1)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any governments.");
+            }
+            else
+            {
+                var leftGov = lookup[playerId];
+                leftGov.RemoveMember(playerId);
+                sb.Append("You are no longer a member of the " + leftGov.Name + " government.");
+                leftGov.Broadcast(FindPlayerNameByID(playerId) + " has left the " + leftGov.Name + " government.");
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_info")]
+        private void cmdChatGovInfo(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 0)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if(!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any government.");
+            }
+            else
+            {
+                var gov = lookup[playerId];
+                sb.Append("Your Government's Info:\n");
+                sb.Append("[" + gov.Tag + "] " + gov.Name + "\n");
+                var sortedList = gov.GetSortedMemberList();
+                foreach (var member in sortedList)
+                {
+                    sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
+                }
+                        
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
         }
 
         #endregion
@@ -176,7 +561,7 @@ namespace Oxide.Plugins
             public Dictionary<string, string> Members { get; set; }
             public List<string> Guests { get; set; }
             public List<string> Inviteds { get; set; }
-
+            // Properties
             public string Dictator
             {
                 get
@@ -206,6 +591,70 @@ namespace Oxide.Plugins
                         Members[newCrownId] = "DICTATOR";
                     }
                 }
+            }
+            // Methods
+            public bool isMember(string playerId)
+            {
+                return (Members.ContainsKey(playerId) && lookup.ContainsKey(playerId));
+            }
+            public bool isGuest(string playerId)
+            {
+                return (Guests.Contains(playerId));
+            }
+            public bool isInvited (string playerId)
+            {
+                return (Inviteds.Contains(playerId));
+            }
+
+            public void AddMember(string playerId, string rank)
+            {
+                if (!isMember(playerId) || !lookup.ContainsKey(playerId))
+                {
+                    Members.Add(playerId, Rank(rank));
+                    lookup.Add(playerId, this);
+                }
+            }
+            public void ModifyMember(string playerId, string rank)
+            {
+                if (isMember(playerId) && lookup.ContainsKey(playerId))
+                {
+                    Members[playerId] = rank;
+                }
+            }
+            public void RemoveMember (string playerId)
+            {
+                if (isMember(playerId) && lookup.ContainsKey(playerId))
+                {
+                    Members.Remove(playerId);
+                    lookup.Remove(playerId);
+                }
+            }
+
+            public List<KeyValuePair<string,string>> GetSortedMemberList()
+            {
+                List<KeyValuePair<string, string>> myList = Members.ToList();
+
+                myList.Sort((firstPair, nextPair) =>
+                {
+                    return firstPair.Value.CompareTo(nextPair.Value);
+                }
+                );
+                return myList;
+            }
+
+            public void Broadcast(string message)
+            {
+                string message_header = "<color=#a1ff46>(GOV BROADCAST)</color> ";
+
+                // Send message to members
+                foreach (var member in Members)
+                {
+                    var player = BasePlayer.FindByID(Convert.ToUInt64(member.Key));
+                    if (player == null)
+                        continue;
+                    player.SendConsoleCommand("chat.add", "", message_header + message);
+                }
+
             }
         }
 
