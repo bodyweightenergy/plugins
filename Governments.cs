@@ -670,6 +670,23 @@ namespace Oxide.Plugins
             SaveData();
         }
 
+        [ChatCommand("gov_help")]
+        private void cmdChatGovHelp(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            sb.Append("Available Commands:\n");
+            sb.Append("<color=#ffd479>/gov_create <GOV TAG> <GOV NAME></color>\n");
+            sb.Append("<color=#ffd479>/gov_invite <PARTIAL PLAYER NAME></color>\n");
+            sb.Append("<color=#ffd479>/gov_join <GOV TAG></color>\n");
+            sb.Append("<color=#ffd479>/gov_assign_rank <PARTIAL PLAYER NAME> <RANK></color>\n");
+            sb.Append("<color=#ffd479>/gov_kick <PARTIAL PLAYER NAME></color>\n");
+            sb.Append("<color=#ffd479>/gov_leave</color>\n");
+            sb.Append("<color=#ffd479>/gov_broadcast <MESSAGE></color>\n");
+            sb.Append("<color=#ffd479>/gov_info</color>\n");
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
         #endregion
 
         #region class Government
