@@ -18,7 +18,8 @@ namespace Oxide.Plugins
     {
         #region Plugin Private Members
 
-        private static string GovernmentDataFilename = "GovernmentData";
+        private const string GovernmentDataFilename = "GovernmentData";
+        private const string GovernmentSettingsFilename = "GovernmentSettings";
         private static Dictionary<string, Government> govs;
         private static Dictionary<string, Government> lookup;
         private static Dictionary<string, string> originalNames;
@@ -26,9 +27,10 @@ namespace Oxide.Plugins
         private static List<string> RankList;
         private static Dictionary<string, string> assignPermAssociation = new Dictionary<string, string> 
         {
-            {"DICTATOR","modify_dictator"},
+            {"DICTATOR","modify_dictator"}, 
             {"HEAD", "modify_head"},
             {"BOOT", "modify_boot"},
+            {"WORKER", "modify_worker"},
             {"CITIZEN", "modify_citizen"}
         };
 
@@ -39,10 +41,11 @@ namespace Oxide.Plugins
         public void SaveData()
         {
             var data = Interface.GetMod().DataFileSystem.GetDatafile(GovernmentDataFilename);
+            var settings = Interface.GetMod().DataFileSystem.GetDatafile(GovernmentSettingsFilename);
             // Saving Rank List Data
             var rankData = new List<object>();
             foreach (var rank in RankList) rankData.Add(rank);
-            data["ranks"] = rankData;
+            settings["ranks"] = rankData;
 
             // Saving Permission Data
             var permissionsData = new Dictionary<string, object>();
@@ -52,7 +55,7 @@ namespace Oxide.Plugins
                 foreach (var rank in permission.Value) permitList.Add(rank);
                 permissionsData.Add(permission.Key, permitList);
             }
-            data["permissions"] = permissionsData;
+            settings["permissions"] = permissionsData;
 
             // Saving Government Data
             var govsData = new Dictionary<string, object>();
@@ -76,24 +79,32 @@ namespace Oxide.Plugins
             }
             data["governments"] = govsData;
             Interface.GetMod().DataFileSystem.SaveDatafile(GovernmentDataFilename);
+            Interface.GetMod().DataFileSystem.SaveDatafile(GovernmentSettingsFilename);
         }
 
         public void LoadData()
         {
             govs.Clear();
+            lookup.Clear();
+            RankList.Clear();
+            permissionList.Clear();
             var data = Interface.GetMod().DataFileSystem.GetDatafile(GovernmentDataFilename);
+            var settings = Interface.GetMod().DataFileSystem.GetDatafile(GovernmentSettingsFilename);
 
             // Load Rank List
-            if (data["ranks"] != null)
+            if (settings["ranks"] != null)
             {
-                var rankList = (List<object>)Convert.ChangeType(data["ranks"], typeof(List<object>));
-                foreach (var irank in rankList) RankList.Add((string)irank);
+                var rankList = (List<object>)Convert.ChangeType(settings["ranks"], typeof(List<object>));
+                foreach (var irank in rankList) 
+                { 
+                    RankList.Add((string)irank); 
+                }
             }
 
             // Load Permissions List
-            if (data["permissions"] != null)
+            if (settings["permissions"] != null)
             {
-                var permissionData = (Dictionary<string, object>)Convert.ChangeType(data["permissions"], typeof(Dictionary<string, object>));
+                var permissionData = (Dictionary<string, object>)Convert.ChangeType(settings["permissions"], typeof(Dictionary<string, object>));
                 foreach (var ipermission in permissionData)
                 {
                     var permitList = (List<object>)Convert.ChangeType(ipermission.Value, typeof(List<object>));
@@ -116,8 +127,8 @@ namespace Oxide.Plugins
                     var members = new Dictionary<string, string>();
                     foreach (var imember in membersData)
                     {
-                        var memberID = (string) imember.Key;
-                        var memberRank = (string) imember.Value;
+                        var memberID = (string)imember.Key;
+                        var memberRank = (string)imember.Value;
                         members.Add(memberID, memberRank);
                     }
                     var guestsData = (List<object>)gov["guests"];
@@ -136,13 +147,14 @@ namespace Oxide.Plugins
                     govs.Add(tag, newGov);
                 }
             }
+            Puts("Successfully loaded (" + govs.Count + ") governments.");
 
         }
 
 
         #endregion //Data Management
 
-        #region Government Class Methods
+        #region Plugin Methods
 
         private bool govNameExists(string name)
         {
@@ -308,21 +320,106 @@ namespace Oxide.Plugins
 
         #endregion
 
-        #region Hook Methods
+        #region Server & Plugin Hooks
 
         [HookMethod("OnServerInitialized")]
         private void OnServerInitialized()
         {
             try
             {
-                lookup = new Dictionary<string, Government>();
-                govs = new Dictionary<string, Government>();
-                LoadData();
             }
             catch (Exception ex)
             {
                 Error("OnServerInitialized failed", ex);
             }
+        }
+
+        [HookMethod("OnPluginLoaded")]
+        private void OnPluginLoaded()
+        {
+            try
+            {
+                lookup = new Dictionary<string, Government>();
+                govs = new Dictionary<string, Government>();
+                permissionList = new Dictionary<string, List<string>>();
+                RankList = new List<string>();
+                LoadData();
+            }
+            catch (Exception ex)
+            {
+                Error("OnPluginLoaded failed ", ex);
+            }
+        }
+
+        [HookMethod("OnServerSave")]
+        private void OnServerSave()
+        {
+            try
+            {
+                SaveData();
+            }
+            catch (Exception ex)
+            {
+                Error("OnServerSave failed", ex);
+            }
+        }
+
+        [HookMethod("OnPluginUnloaded")]
+        private void OnPluginUnloaded()
+        {
+            try
+            {
+                SaveData();
+            }
+            catch (Exception ex)
+            {
+                Error("OnPluginLoaded failed", ex);
+            }
+        }
+
+        #endregion 
+
+        #region Console Commands
+
+        [ConsoleCommand("gov.dump")]
+        private void cmdConsoleDumpData(ConsoleSystem.Arg arg)
+        {
+            var sb = new StringBuilder();
+            SaveData();
+            LoadData();
+            // Dump Message Header
+            sb.Append("**** Dumping Government Data & Settings ****\n\n");
+            // Rank List Dump
+            sb.Append("Rank List = [");
+            foreach (var rank in RankList)
+            {
+                sb.Append(rank + ", ");
+            }
+            sb.Append("]\n\n");
+            // Permission List Dump
+            sb.Append("Permission List:\n");
+            foreach(var perm in permissionList)
+            {
+                sb.Append(perm.Key + " = [");
+                foreach(var rank in perm.Value)
+                {
+                    sb.Append(rank + ", ");
+                }
+                sb.Append("]\n");
+            }
+            sb.Append("\n");
+            // Governments Data Dump
+            sb.Append("Governments Data:\n\n");
+            foreach(var gov in govs)
+            {
+                sb.Append("[" + gov.Key + "] " + gov.Value.Name + "\n");
+                foreach(var member in gov.Value.Members)
+                {
+                    sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
+                }
+                sb.Append("\n");
+            }
+            PrintToConsole(arg.Player(), sb.ToString());
         }
 
         #endregion
@@ -515,6 +612,30 @@ namespace Oxide.Plugins
                 leftGov.RemoveMember(playerId);
                 sb.Append("You are no longer a member of the " + leftGov.Name + " government.");
                 leftGov.Broadcast(FindPlayerNameByID(playerId) + " has left the " + leftGov.Name + " government.");
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_broadcast")]
+        private void cmdChatGovBroadcast(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args == null)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!HasPermission(playerId, "broadcast_all")) sb.Append("You do not have permission to broadcast.");
+            else
+            {
+                var bsb = new StringBuilder();
+                foreach(var arg in args)
+                {
+                    bsb.Append(arg + " ");
+                }
+                lookup[playerId].Broadcast(bsb.ToString());
+                sb.Append("Broadcast sent successfully.");
             }
             SendReply(player, sb.ToString());
             SaveData();
