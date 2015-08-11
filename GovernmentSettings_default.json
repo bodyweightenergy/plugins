@@ -1,0 +1,77 @@
+{
+"permissions": {
+    "access_door_boot": [
+      "DICTATOR",
+      "HEAD",
+      "BOOT"
+    ],
+    "access_door_citizen": [
+      "DICTATOR",
+      "HEAD",
+      "BOOT",
+      "CITIZEN"
+    ],
+    "access_door_crown": [
+      "DICTATOR"
+    ],
+    "access_door_guest": [
+      "DICTATOR",
+      "HEAD",
+      "BOOT",
+      "CITIZEN"
+    ],
+    "access_door_head": [
+      "DICTATOR",
+      "HEAD"
+    ],
+    "add_build": [
+      "DICTATOR",
+      "HEAD",
+      "WORKER"
+    ],
+    "add_deployable": [
+      "DICTATOR",
+      "HEAD",
+      "BOOT",
+      "WORKER"
+    ],
+    "broadcast_all": [
+      "DICTATOR",
+      "HEAD"
+    ],
+    "modify_boot": [
+      "DICTATOR",
+      "HEAD"
+    ],
+    "modify_citizen": [
+      "DICTATOR",
+      "HEAD"
+    ],
+    "modify_crown": [
+      "DICTATOR"
+    ],
+    "modify_guest": [
+      "DICTATOR",
+      "HEAD",
+      "BOOT"
+    ],
+    "modify_head": [
+      "DICTATOR"
+    ],
+    "modify_worker": [
+      "DICTATOR",
+      "HEAD"
+    ],
+    "remove_build": [
+      "DICTATOR",
+      "HEAD"
+    ]
+  },
+"ranks": [
+    "DICTATOR",
+    "HEAD",
+    "BOOT",
+    "WORKER",
+    "CITIZEN"
+  ]
+}
