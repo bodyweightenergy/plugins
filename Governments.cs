@@ -25,6 +25,7 @@ namespace Oxide.Plugins
         private static Dictionary<string, string> originalNames;
         private static Dictionary<string, List<string>> permissionList;
         private static List<string> RankList;
+        private static Dictionary<string, Dictionary<string, float>> damageScaleTable;
         private static Dictionary<string, string> assignPermAssociation = new Dictionary<string, string> 
         {
             {"DICTATOR","modify_dictator"}, 
@@ -33,6 +34,7 @@ namespace Oxide.Plugins
             {"WORKER", "modify_worker"},
             {"CITIZEN", "modify_citizen"}
         };
+        
 
         #endregion
 
@@ -56,6 +58,9 @@ namespace Oxide.Plugins
                 permissionsData.Add(permission.Key, permitList);
             }
             settings["permissions"] = permissionsData;
+
+            // Saving Damage Scale Data
+            // TODO
 
             // Saving Government Data
             var govsData = new Dictionary<string, object>();
@@ -113,6 +118,33 @@ namespace Oxide.Plugins
                     permissionList.Add(ipermission.Key, newPermitList);
                 }
             }
+            else
+            {
+
+            }
+
+            // Load Damage Scale Types Table
+            if(settings["damageScales"] != null)
+            {
+                var damageScaleData = (Dictionary<string, object>)Convert.ChangeType(settings["damageScales"], typeof(Dictionary<string, object>));
+                foreach(var attackerData in damageScaleData)
+                {
+                    var attackerRank = attackerData.Key;
+                    var victimData = (Dictionary<string, object>)attackerData.Value;
+                    var victims = new Dictionary<string, float>();
+                    foreach(var victim in victimData)
+                    {
+                        var victimRank = victim.Key;
+                        var damageScaleValue = (float) Convert.ChangeType(victim.Value, typeof(float));
+                        victims.Add(victimRank, damageScaleValue);
+                    }
+                    damageScaleTable.Add(attackerRank, victims);
+                }
+            }
+            else
+            {
+
+            }
 
             // Load Government Data
             if (data["governments"] != null)
@@ -143,7 +175,10 @@ namespace Oxide.Plugins
                     {
                         inviteds.Add(iinvited.ToString());
                     }
-                    var newGov = new Government() { Tag = tag, Name = name, Members = members, Guests = guests, Inviteds = inviteds };
+                    var newGov = new Government() { Tag = tag, Name = name};
+                    foreach (var m in members) newGov.AddMember(m.Key, m.Value);
+                    newGov.Guests = guests;
+                    newGov.Inviteds = inviteds;
                     govs.Add(tag, newGov);
                 }
             }
@@ -174,7 +209,7 @@ namespace Oxide.Plugins
             {
                 return rank_str;
             }
-            throw (new Exception("Attempted to assign invalid rank."));
+            throw (new Exception("Attempted to assign invalid rank \"" + rank_str + "\"."));
             return null;
         }
         public Government getGovByUserID (string playerId)
@@ -253,7 +288,7 @@ namespace Oxide.Plugins
 
         private bool HasPermission(string playerId, string permissionType)
         {
-            if (lookup[playerId] != null)
+            if (lookup.ContainsKey(playerId)) 
             {
                 var memberRank = lookup[playerId].Members[playerId];
                 if (permissionList[permissionType] != null)
@@ -302,7 +337,7 @@ namespace Oxide.Plugins
                         SetupPlayer(player);
                 }
             }
-        }
+        } 
 
         private void CreateGovernment(string tag, string name, string creatorID)
         {
@@ -343,6 +378,7 @@ namespace Oxide.Plugins
                 govs = new Dictionary<string, Government>();
                 permissionList = new Dictionary<string, List<string>>();
                 RankList = new List<string>();
+                damageScaleTable = new Dictionary<string, Dictionary<string, float>>();
                 LoadData();
             }
             catch (Exception ex)
@@ -374,6 +410,39 @@ namespace Oxide.Plugins
             catch (Exception ex)
             {
                 Error("OnPluginLoaded failed", ex);
+            }
+        }
+
+        [HookMethod("OnEntityTakeDamage")]
+        private void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo hitInfo)
+        {
+            try
+            {
+                float damageScale = 1.0f;
+                var sb = new StringBuilder();
+                if (entity as BasePlayer == null || hitInfo == null) return;
+                var attackerPlayer = hitInfo.Initiator as BasePlayer;
+                var victimPlayer = entity as BasePlayer;
+                var victimID = victimPlayer.userID.ToString();
+                var attackerID = attackerPlayer.userID.ToString();
+                if (lookup.ContainsKey(attackerID) && lookup.ContainsKey(victimID))
+                {
+                    var attackerGov = lookup[attackerID];
+                    var victimGov = lookup[victimID];
+                    if (attackerGov == victimGov)
+                    {
+                        var attackerRank = attackerGov.Members[attackerID];
+                        var victimRank = victimGov.Members[victimID];
+                        damageScale = damageScaleTable[attackerRank][victimRank];
+                        hitInfo.damageTypes.ScaleAll(damageScale);
+                        //sb.Append(attackerID + " attacked " + victimID + 
+                        //    " and caused " + damageScale.ToString() + " damage scale of type " + hitInfo.damageTypes.GetMajorityDamageType().ToString());
+                    }
+                }
+                SendReply(hitInfo.Initiator as BasePlayer, sb.ToString());
+            } catch (NullReferenceException ex)
+            {
+
             }
         }
 
@@ -413,12 +482,21 @@ namespace Oxide.Plugins
             foreach(var gov in govs)
             {
                 sb.Append("[" + gov.Key + "] " + gov.Value.Name + "\n");
-                foreach(var member in gov.Value.Members)
+                foreach(var member in gov.Value.Members) sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
+                foreach (var guest in gov.Value.Guests) sb.Append(guest + "\tGUEST\t" + FindPlayerNameByID(guest) + "\n");
+                foreach (var invited in gov.Value.Inviteds) sb.Append(invited + "\tINVITED\t" + FindPlayerNameByID(invited) + "\n");
                 {
-                    sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
+
                 }
-                sb.Append("\n");
             }
+                sb.Append("\n");
+            // Lookup Data Dump
+                sb.Append("Lookup Data:\n");
+            foreach(var pair in lookup)
+            {
+                sb.Append(pair.Key + "\t" + pair.Value.Tag + "\t" + pair.Value.Members[pair.Key] +"\t"+ FindPlayerNameByID(pair.Key) + "\n");
+            }
+            
             PrintToConsole(arg.Player(), sb.ToString());
         }
 
@@ -435,7 +513,7 @@ namespace Oxide.Plugins
             {
                 sb.Append("Invalid command. Type /gov_help for more info.");
             }
-            else if (lookup[playerId] != null)
+            else if (lookup.ContainsKey(playerId))
             {
                 sb.Append("You are already a member of a government.");
             }
@@ -478,10 +556,49 @@ namespace Oxide.Plugins
                 var invitedPlayer = FindPlayerByPartialName(args[0]);
                 var invitedID = invitedPlayer.userID.ToString();
                 var invitingGov = lookup[playerId];
-                invitingGov.Inviteds.Add(invitedID);
-                sb.Append("You have invited " + invitedPlayer.displayName + " to join your domain.");
-                sb.Append(" They must leave their existing government first (if they are a member of one)");
-                sb.Append(", then type \"/gov_join " + invitingGov.Tag + "\" to join yours.");
+                if (invitingGov.Inviteds.Contains(invitedID)) sb.Append("You already invited this player.");
+                else
+                {
+                    invitingGov.Inviteds.Add(invitedID);
+                    sb.Append("You have invited " + invitedPlayer.displayName + " to join your domain.");
+                    sb.Append(" They must leave their existing government first (if they are a member of one)");
+                    sb.Append(", then type \"/gov_join " + invitingGov.Tag + "\" to join yours.");
+                    SendReply(invitedPlayer, "You have been invited to become a citizen in the " + invitingGov.Name + ". To join, you must leave any government you are part of, then type /gov_join " + invitingGov.Tag + ".");
+                }
+            }
+            SendReply(player, sb.ToString());
+            SaveData();
+        }
+
+        [ChatCommand("gov_uninvite")]
+        private void cmdChatGovUninvite(BasePlayer player, string command, string[] args)
+        {
+            var sb = new StringBuilder();
+            var playerId = player.userID.ToString();
+            if (args.Length != 1)
+            {
+                sb.Append("Invalid command. Type /gov_help for more info.");
+            }
+            else if (!lookup.ContainsKey(playerId))
+            {
+                sb.Append("You are not a member of any government.");
+            }
+            else if (!HasPermission(playerId, "modify_citizen"))
+            {
+                sb.Append("You do not have permission to invite.");
+            }
+            else
+            {
+                var invitedPlayer = FindPlayerByPartialName(args[0]);
+                var invitedID = invitedPlayer.userID.ToString();
+                var invitingGov = lookup[playerId];
+                if (!invitingGov.Inviteds.Contains(invitedID)) sb.Append("This player is already not invited to join your government.");
+                else
+                {
+                    invitingGov.Inviteds.Remove(invitedID);
+                    sb.Append("You have withdrawn your invitation for " + invitedPlayer.displayName + " to join your domain.");
+                    SendReply(invitedPlayer, "The invitation to join the " + invitingGov.Name + " has been withdrawn.");
+                }
             }
             SendReply(player, sb.ToString());
             SaveData();
@@ -505,24 +622,28 @@ namespace Oxide.Plugins
                 var kickedPlayer = FindPlayerByPartialName(args[0]);
                 var kickedPlayerName = kickedPlayer.displayName;
                 var kickedPlayerID = kickedPlayer.userID.ToString();
-                if (kickedPlayer == null) sb.Append("Player name does not exist or isn't unique.");
-                else if (!lookup.ContainsKey(kickedPlayerID)) sb.Append("This player is not a member of your domain.");
-                else if (lookup[kickedPlayerID] != lookup[playerId]) sb.Append("This player is not a member of your domain.");
-                else
+                if (kickedPlayer != null)
                 {
-                    var kickedPlayerRank = GetRank(kickedPlayerID);
-                    var permission = assignPermAssociation[kickedPlayerRank];
-                    if (!HasPermission(playerId, permission))
-                    {
-                        sb.Append("You do not have permission to kick this player.");
-                    }
+                    if (!lookup.ContainsKey(kickedPlayerID)) sb.Append("This player is not a member of your domain.");
+                    else if (lookup[kickedPlayerID] != lookup[playerId]) sb.Append("This player is not a member of your domain.");
                     else
                     {
-                        lookup[playerId].RemoveMember(kickedPlayerID);
-                        sb.Append("You have successfully kicked " + kickedPlayerName + " from your government.");
-                        lookup[playerId].Broadcast(kickedPlayerName + " has been banished from the " + lookup[playerId].Name + " government.");
+                        var kickedPlayerRank = GetRank(kickedPlayerID);
+                        var permission = assignPermAssociation[kickedPlayerRank];
+                        if (!HasPermission(playerId, permission))
+                        {
+                            sb.Append("You do not have permission to kick this player.");
+                        }
+                        else
+                        {
+                            lookup[playerId].RemoveMember(kickedPlayerID);
+                            sb.Append("You have successfully kicked " + kickedPlayerName + " from your government.");
+                            lookup[playerId].Broadcast(kickedPlayerName + " has been banished from the " + lookup[playerId].Name + " government.");
+                            SendReply(kickedPlayer, "You have been banished from the " + lookup[playerId].Name + " government.");
+                        }
                     }
                 }
+                else sb.Append("Player name does not exist or isn't unique.");
             }
             SendReply(player, sb.ToString());
             SaveData();
@@ -598,7 +719,7 @@ namespace Oxide.Plugins
         {
             var sb = new StringBuilder();
             var playerId = player.userID.ToString();
-            if (args.Length != 1)
+            if (args.Length != 0)
             {
                 sb.Append("Invalid command. Type /gov_help for more info.");
             }
@@ -660,11 +781,9 @@ namespace Oxide.Plugins
                 sb.Append("Your Government's Info:\n");
                 sb.Append("[" + gov.Tag + "] " + gov.Name + "\n");
                 var sortedList = gov.GetSortedMemberList();
-                foreach (var member in sortedList)
-                {
-                    sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
-                }
-                        
+                foreach (var member in sortedList) sb.Append(member.Key + "\t" + member.Value + "\t" + FindPlayerNameByID(member.Key) + "\n");
+                foreach (var guest in gov.Guests) sb.Append(guest + "\tGUEST\t" + FindPlayerNameByID(guest) + "\n");
+                foreach (var invited in gov.Inviteds) sb.Append(invited + "\tINVITED\t" + FindPlayerNameByID(invited) + "\n");      
             }
             SendReply(player, sb.ToString());
             SaveData();
@@ -729,6 +848,13 @@ namespace Oxide.Plugins
                         Members[newCrownId] = "DICTATOR";
                     }
                 }
+            }
+            // Default Constructor
+            public Government ()
+            {
+                Members = new Dictionary<string, string>();
+                Guests = new List<string>();
+                Inviteds = new List<string>();
             }
             // Methods
             public bool isMember(string playerId)
@@ -814,6 +940,15 @@ namespace Oxide.Plugins
             else
                 Interface.Oxide.LogError("{0}: {1}", Title, message);
         }
+
+        #endregion
+
+        #region Settings Defaults
+
+        //private const Dictionary<string, Dictionary<string, float>> damageScaleTable_default = 
+        //{
+
+        //};
 
         #endregion
     }
